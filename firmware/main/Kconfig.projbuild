@@ -1,0 +1,97 @@
+menu "Voice Agent Configuration"
+
+    menu "Wi-Fi Station"
+        config VOICE_WIFI_SSID
+            string "2.4 GHz Wi-Fi SSID"
+            default "YOUR_24GHZ_SSID"
+
+        config VOICE_WIFI_PASSWORD
+            string "2.4 GHz Wi-Fi Password"
+            default "YOUR_WIFI_PASSWORD"
+    endmenu
+
+    menu "LAN Realtime Server"
+        config VOICE_SERVER_HOST
+            string "Server Host / IP"
+            default "192.168.1.199"
+
+        config VOICE_SERVER_PORT
+            int "Server Port"
+            default 8082
+            range 1 65535
+
+        config VOICE_SERVER_PATH
+            string "WebSocket Path"
+            default "/v1/realtime"
+
+        config VOICE_SERVER_MODEL
+            string "Model Query Parameter"
+            default "lfm3-audio-2b"
+
+        config VOICE_SERVER_API_KEY
+            string "Optional Bearer API Key (empty to omit)"
+            default ""
+
+        config VOICE_AUTO_CONNECT_BOOT
+            bool "Auto-connect and enter LISTENING on boot"
+            default n
+            help
+                If disabled (default), device lands on the Tap-to-Talk READY Agent Card.
+    endmenu
+
+    menu "Agent Persona & Customizable Orb"
+        config VOICE_AGENT_NAME
+            string "Default Agent Name"
+            default "EMBER"
+
+        config VOICE_AGENT_ROLE
+            string "Default Agent Role Subtitle"
+            default "Local Voice Agent"
+
+        config VOICE_AGENT_INSTRUCTIONS
+            string "System Instructions"
+            default "Respond with interleaved text and audio. You are Ember, a concise, helpful local voice assistant running on the user's LAN. Keep replies short and conversational."
+
+        config VOICE_ORB_DEFAULT_COLOR
+            hex "Default Orb Accent Color (0xRRGGBB, no cyan)"
+            default 0xF59E0B
+
+        config VOICE_IDLE_DIM_SEC
+            int "Idle AMOLED auto-dim timeout (seconds, 0 disables)"
+            default 30
+            range 0 3600
+    endmenu
+
+    menu "Audio, AEC & VAD Tuning"
+        config VOICE_SPEAKER_VOLUME_PCT
+            int "Default Speaker Volume (%)"
+            default 75
+            range 0 100
+
+        config VOICE_MIC_GAIN_DB
+            int "ES8311 Microphone PGA Gain (dB)"
+            default 30
+            range 0 42
+
+        config VOICE_VAD_HOLDBACK_MS
+            int "Onset Confirmation Holdback (ms)"
+            default 300
+            range 100 600
+
+        config VOICE_VAD_SILENCE_MS
+            int "Silence Before Turn Commit (ms)"
+            default 650
+            range 250 2000
+
+        config VOICE_BARGE_IN_MS
+            int "Barge-In Speech Duration During Playback (ms)"
+            default 220
+            range 120 600
+
+        config VOICE_BARGE_IN_MARGIN_DB
+            int "Barge-In Extra Margin Over Noise Floor (dB)"
+            default 6
+            range 0 18
+    endmenu
+
+endmenu

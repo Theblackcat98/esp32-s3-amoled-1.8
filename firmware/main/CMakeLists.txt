@@ -1,0 +1,33 @@
+idf_component_register(
+    SRCS
+        "app_main.c"
+        "board/board_pmu.c"
+        "board/board_hw.c"
+        "audio/audio_ringbuf.c"
+        "audio/audio_resampler.c"
+        "audio/audio_engine.c"
+        "net/wifi_mgr.c"
+        "net/realtime_ws.c"
+        "session/session_mgr.c"
+        "ui/ui_theme.c"
+        "ui/ui_app.c"
+    INCLUDE_DIRS
+        "."
+        "board"
+        "audio"
+        "net"
+        "session"
+        "ui"
+    REQUIRES
+        nvs_flash
+        esp_wifi
+        esp_event
+        esp_netif
+        esp_timer
+        esp_driver_gpio
+        esp_driver_i2c
+        esp_driver_i2s
+        json
+        mbedtls
+        esp_psram
+)

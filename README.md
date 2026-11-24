@@ -1,6 +1,14 @@
-# ESP32-S3-Touch-AMOLED-1.8 (V2) Firmware
+# ESP32-S3-Touch-AMOLED-1.8 (V2) — Full-Duplex Voice Agent
 
-Starter firmware and Board Support Package (BSP) for the **Waveshare ESP32-S3-Touch-AMOLED-1.8 V2** development unit.
+Full-duplex realtime voice agent and Board Support Package (BSP) for the **Waveshare ESP32-S3-Touch-AMOLED-1.8 V2** development unit, targeting a LAN `llama-server` (`LiquidAI/LFM3-Audio-2B`) over `/v1/realtime` WebSockets.
+
+## Repository Overview
+
+- `firmware/` — **Primary ESP-IDF v5.5.5 Voice Agent firmware** (PlatformIO + `pioarduino`, Waveshare V2 BSP, ESP-SR full-duplex AEC + WebRTC NS/VAD, LVGL 9 true-black customizable Orb UI).
+- `server/` — Host `llama-server` launcher (`run-llama-server.sh`), Python CLI test client (`test_realtime_cli.py`), stdlib offline `/v1/realtime` mock server (`mock_realtime_server.py`), and Ember system prompt.
+- `docs/` — Wire protocol specification (`docs/protocol.md`) and V2 hardware/AEC tuning notes (`docs/hardware-v2-notes.md`).
+- `harness/` — Phase 2 LAN Agent Harness boundary specification (`harness/README.md`).
+- `src/` + `include/` + `platformio.ini` — Root Arduino + LVGL 8.4 V2 hardware diagnostic starter.
 
 ## Hardware Specifications (Revision V2)
 
@@ -28,30 +36,63 @@ Starter firmware and Board Support Package (BSP) for the **Waveshare ESP32-S3-To
 ```text
 ├── boards/
 │   └── waveshare_esp32_s3_touch_amoled_1_8_v2.json   # Custom PlatformIO board manifest
-├── include/
-│   ├── board_pins.h          # Complete V2 pinout & I2C address constants
-│   ├── lv_conf.h             # LVGL 8.4 config (RGB565 byte-swapped for QSPI DMA)
-│   └── bsp/
-│       ├── board_bsp.h       # Unified Board Support Package facade
-│       ├── cst820_touch.h    # Single-burst CST820 touch driver (0x15)
-│       ├── es8311_audio.h    # ES8311 codec + I2S speaker/mic driver (0x18)
-│       └── tca9554_io.h      # TCA9554 I/O expander driver (0x20)
-├── src/
-│   ├── main.cpp              # Entry point + LVGL PSRAM double-buffered port
-│   ├── bsp/                  # Hardware bring-up & peripheral polling
-│   └── ui/                   # Starter true-black AMOLED hardware dashboard
+├── docs/
+│   ├── protocol.md           # OpenAI Realtime GA + harness.* JSON schemas
+│   └── hardware-v2-notes.md  # V2 pinout, AXP2101 map, ES8311 reg 0x44 & AEC tuning
+├── server/
+│   ├── run-llama-server.sh   # Reproducible LFM3-Audio-2B llama-server launcher
+│   ├── mock_realtime_server.py # Stdlib offline /v1/realtime GA mock server
+│   ├── test_realtime_cli.py  # Desktop test client (--synthetic / --wav / --mic)
+│   └── prompts/default_agent.txt
+├── harness/
+│   └── README.md             # Phase 2 LAN Agent Harness boundary contract
+├── firmware/                 # Primary ESP-IDF v5.5 Voice Agent (pioarduino)
+│   ├── platformio.ini        # src_dir = main, framework = espidf
+│   ├── sdkconfig.defaults    # PSRAM OPI, ESP-SR, LVGL 9, Wi-Fi tuning
+│   ├── partitions.csv        # 16 MB flash partition table
+│   ├── test_host/            # Host C unit tests for resampler & ring buffer
+│   └── main/                 # board/, audio/, net/, session/, ui/
+├── include/ & src/           # Root Arduino + LVGL 8.4 V2 diagnostic starter
 └── platformio.ini
 ```
 
-## Build, Flash & Monitor
+## Build, Configure & Test
+
+### 1. Voice Agent Firmware (`firmware/`)
 
 ```bash
-# Build firmware
+# Copy local Wi-Fi / LAN server template (gitignored)
+cp firmware/main/local_config.h.example firmware/main/local_config.h
+# Edit SSID, password, LAN server IP (default 192.168.1.199:8082), optional API key
+
+# Build ESP-IDF 5.5 Voice Agent firmware
+cd firmware && pio run
+
+# Flash & monitor over USB-C
+pio run -t upload && pio device monitor
+```
+
+### 2. Server & Offline Verification
+
+```bash
+# Run offline mock server + synthetic client verification
+python3 server/mock_realtime_server.py --port 18082 &
+python3 server/test_realtime_cli.py --url http://127.0.0.1:18082 --synthetic
+
+# Run host DSP unit tests (24k->16k resampler + ring buffer)
+gcc -Wall -Wextra -Werror -O2 -I firmware/main/audio \
+  firmware/test_host/test_audio_dsp.c \
+  firmware/main/audio/audio_resampler.c \
+  firmware/main/audio/audio_ringbuf.c -lm -o /tmp/test_audio_dsp && /tmp/test_audio_dsp
+
+# Launch live LFM3-Audio-2B server on LAN (manual GPU run)
+./server/run-llama-server.sh
+```
+
+### 3. Root Hardware Diagnostic Starter
+
+```bash
 pio run
-
-# Flash over USB-C (plug in normally; if in boot loop, hold BOOT while tapping PWR/plugging in)
 pio run -t upload
-
-# Open serial monitor (115200 baud, exception decoder enabled)
 pio device monitor
 ```

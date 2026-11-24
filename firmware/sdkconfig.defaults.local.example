@@ -1,0 +1,9 @@
+# Copy to sdkconfig.defaults.local (gitignored) and fill in your local network credentials.
+# Re-run `rm -f sdkconfig && pio run` after editing so defaults regenerate sdkconfig.
+CONFIG_VOICE_WIFI_SSID="YOUR_24GHZ_SSID"
+CONFIG_VOICE_WIFI_PASSWORD="YOUR_WIFI_PASSWORD"
+CONFIG_VOICE_SERVER_HOST="192.168.1.199"
+CONFIG_VOICE_SERVER_PORT=8082
+CONFIG_VOICE_SERVER_API_KEY=""
+CONFIG_VOICE_AGENT_NAME="EMBER"
+CONFIG_VOICE_ORB_DEFAULT_COLOR=0xF59E0B

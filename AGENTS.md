@@ -11,8 +11,19 @@ This repository targets **Hardware Revision V2** of the Waveshare ESP32-S3-Touch
 - **PMIC Safety:** Do **not** blindly rewrite AXP2101 LDO voltages; factory OTP rails power the board cleanly at boot.
 - **USB Serial Safety:** Always keep `Serial.setTxTimeoutMs(0)` enabled when `ARDUINO_USB_CDC_ON_BOOT=1` so standalone battery operation never blocks on `Serial.print`.
 
-## Architecture Conventions
+## Architecture & Build Conventions
 
-- Keep hardware drivers and pin definitions strictly inside `include/board_pins.h`, `include/bsp/`, and `src/bsp/`.
-- Keep application screens/widgets inside `src/ui/` consuming `bsp::BoardBsp` rather than touching I2C/SPI registers directly.
-- Verify every change compiles cleanly with `pio run` before finishing.
+This repository contains two complementary firmware targets plus host tooling:
+
+1. **Primary Voice Agent Firmware (`firmware/`, ESP-IDF 5.5.5 via PlatformIO + `pioarduino`):**
+   - Configured in `firmware/platformio.ini` (`src_dir = main`, `framework = espidf`, `waveshare/esp32_s3_touch_amoled_1_8 ^2.0.3`, `espressif/esp-sr ^2.6.2`, `espressif/esp_websocket_client ^1.8.0`, `lvgl/lvgl ^9.2.0`).
+   - Verify compilation with `cd firmware && pio run`.
+   - ES8311 reg `0x44 = 0x48` outputs stereo `(L = DAC_ref, R = ADC_mic)`, so ESP-SR AFE **must** use `input_format = "RM"` (`AFE_TYPE_FD`, `AEC_MODE_FD_LOW_COST`, `models = NULL`).
+   - OpenAI Realtime GA WebSocket client uses `response.output_audio.delta` / `response.output_text.delta` (never beta `response.audio.*`), filters by `response_id`, and keeps audio/WS buffers in Octal PSRAM.
+   - UI uses a true-black AMOLED theme with **zero cyan anywhere** and a customizable NVS-persisted Orb.
+   - Never start `llama-server` / `lfm3.sh` in automated tests; test server protocol against `server/mock_realtime_server.py`.
+
+2. **Root Hardware Bring-Up Diagnostic (`platformio.ini`, Arduino + LVGL 8.4):**
+   - Keep hardware drivers and pin definitions strictly inside `include/board_pins.h`, `include/bsp/`, and `src/bsp/`.
+   - Keep application screens/widgets inside `src/ui/` consuming `bsp::BoardBsp` rather than touching I2C/SPI registers directly.
+   - Verify root starter changes compile cleanly with `pio run`.

@@ -63,13 +63,13 @@ From the device label, this unit is the **Waveshare ESP32-S3-Touch-AMOLED-1.8 (V
 
 ```text
 +--------------------------------------------------+         LAN Wi-Fi (2.4 GHz)        +-------------------------------------+
-|        Waveshare ESP32-S3-Touch-AMOLED-1.8       |    ws://<HOST_IP>:8080/v1/realtime |        LAN Host Computer            |
-|                                                  | <================================> |                                     |
-|  [MIC] --> ES8311 (Reg 0x44: L=DAC_ref, R=ADC)   |   Uplink:   PCM16 16kHz (Base64)   |  llama-server (llama.cpp >= v1.0)   |
-|               |                                  |             + response.cancel      |   - Model: LFM3-Audio-2B / Omni-2B  |
+|        Waveshare ESP32-S3-Touch-AMOLED-1.8       |    ws://<HOST_IP>:8082/v1/realtime |        LAN Host Computer            |
+|                                                  | <================================> |  192.168.1.199 (RX 7900 XT 20GB)   |
+|  [MIC] --> ES8311 (Reg 0x44: L=DAC_ref, R=ADC)   |   Uplink:   PCM16 16kHz (Base64)   |  llama-server (llama.cpp >= 0.8.0)  |
+|               |  input_format = "RM"             |             + response.cancel      |   - Model: LFM3-Audio-2B-Q4_K_M     |
 |               v                                  |                                    |   - Endpoint: /v1/realtime (WS)     |
-|        ESP-SR AFE (AEC + NS + VAD @ 16kHz)       |   Downlink: PCM16 24kHz (Base64)   |   - Modality: Audio-in -> Audio-out |
-|               |                                  |             + transcript deltas    |                                     |
+|     ESP-SR AFE ("RM", AEC_FD + NS + VAD @ 16kHz) |   Downlink: PCM16 24kHz (Base64)   |   - response.output_audio.delta     |
+|               |                                  |             + output_text.delta    |   - response.output_text.delta      |
 |   Downlink -> Resampler (24k->16k) -> ES8311 SPK |                                    +-------------------------------------+
 |   State/Text -> LVGL 9 UI (CO5300 + CST820)      |
 +--------------------------------------------------+
@@ -94,56 +94,60 @@ From the device label, this unit is the **Waveshare ESP32-S3-Touch-AMOLED-1.8 (V
 ## 4. LAN Inference Server (`llama.cpp`) Plan
 
 ### Runtime Selection & Capabilities
-- **Target Runtime:** Stock `llama.cpp` **`v1.0.0+`** (realtime audio shipped in `v0.8.0` and stabilized through `v0.9.0`/`v1.0.0`).
-- **Endpoint:** `ws://<LAN_IP>:8080/v1/realtime` — implements the OpenAI Realtime WebSocket event schema for conversation, transcription, and tool calls.
-- **LAN Security Requirement (`v1.0.0+`):** Binding `llama-server` to a non-loopback address (`--host 0.0.0.0`) with tool support enabled requires an explicit `--api-key`. The ESP32 client must pass `Authorization: Bearer <API_KEY>` in the WebSocket handshake headers.
+- **Target Runtime:** Stock `llama.cpp` **`0.8.0-dev+` / `v1.0.0+`** (verified local build at `/home/nick/Documents/Models/llama.cpp/build/bin/llama-server` on ROCm0 RX 7900 XT 20 GB).
+- **Endpoint:** `ws://<LAN_IP>:8082/v1/realtime` — implements the OpenAI Realtime **GA** WebSocket event schema (`tools/server/server-realtime.cpp`).
+- **LAN Auth Support:** When `--api-key` is supplied to `llama-server` (or a Phase 2 Harness), the ESP32 client passes `Authorization: Bearer <API_KEY>` in the WebSocket handshake headers.
 
 ### Model Options & Full-Duplex Reality Check
 
 | Option | Runtime + Model | Duplex Behavior | Hardware Target | Best For |
 | :--- | :--- | :--- | :--- | :--- |
-| **Option A (Recommended PoC)** | Stock `llama-server` + **`LiquidAI/LFM3-Audio-2B`** (or **`LFM3-Omni-2B`**) GGUF + `mmproj` | **Interruptible Full-Duplex:** Audio prefills as it streams in; output streams back at 24 kHz PCM16; client VAD triggers instant barge-in via `response.cancel`. Supports tool calls natively. | Consumer GPU or modern Apple Silicon (must sustain **>1.0x real-time** audio token generation to avoid playback stutter) | Fast PoC directly against stock `llama-server` with a clean OpenAI Realtime contract. |
+| **Option A (Selected PoC)** | Stock `llama-server` + **`LiquidAI/LFM3-Audio-2B-Q4_K_M`** + `mmproj` | **Interruptible Full-Duplex:** Audio prefills as it streams in; output streams back at 24 kHz PCM16; client VAD triggers instant barge-in via `response.cancel`. Supports tool calls natively. | Local host RX 7900 XT (20 GB VRAM, sustains >1.0× real-time audio generation) | Fast PoC directly against stock `llama-server` with a clean OpenAI Realtime GA contract. |
 | **Option B (True Simultaneous Duplex)** | **`llama.cpp-omni`** (fork) + **`MiniCPM-o 4.5`** (9B GGUF stack) | **Simultaneous Overlapping Duplex:** Model continuously listens and generates overlapping audio/backchannels natively. | ≥12 GB NVIDIA GPU or ≥24 GB Apple M4 Max | Exploring true simultaneous duplex if interruptible turn-taking feels too rigid (requires adapting to `llama.cpp-omni`'s wire protocol). |
 
 ### Critical `llama-server /v1/realtime` Constraints to Design Around
 1. **No Server-Side VAD (`turn_detection: null`):** `llama-server` does **not** detect speech start/stop or emit `input_audio_buffer.speech_started`. End-of-turn (`input_audio_buffer.commit` + `response.create`) and barge-in (`response.cancel`) are **100% the ESP32 client's responsibility**. Calling `response.cancel` cleanly aborts active generation while preserving session history.
-2. **Sample-Rate Asymmetry & No Auto-Resampling:**
-   - Uplink must match `audio.input.format.rate` reported in `session.created` (typically **16 kHz PCM16 mono**); `llama-server` does not resample mismatched input rates.
-   - Downlink audio (`response.audio.delta`) arrives as **24 kHz PCM16 mono** (for LFM3-Audio).
-3. **Real-Time Factor (RTF) Sensitivity:** If the host machine generates audio slower than 1.0× real time (e.g., on an underpowered iGPU), streamed playback will underrun and crackle. Validate RTF ≥ 1.2× on the LAN host before debugging ESP32 playback.
-4. **Input Validation Hygiene:** Ensure `session.update` JSON payloads strictly conform to expected object schemas (especially once `tools` are added in Phase 2) and pin a recent `llama.cpp` build containing the realtime error-handling fixes (`>= v1.0.0`).
+2. **OpenAI Realtime GA Event Names:** `llama-server` emits **`response.output_audio.delta`** / **`response.output_audio.done`** and **`response.output_text.delta`** / **`response.output_text.done`** (not beta `response.audio.*` / `response.audio_transcript.*`).
+3. **Sample-Rate Asymmetry & No Auto-Resampling:**
+   - Uplink must match `audio.input.format.rate` reported in `session.created` (**16 kHz PCM16 mono**); `llama-server` does not resample mismatched input rates.
+   - Downlink audio (`response.output_audio.delta`) arrives as **24 kHz PCM16 mono** (for LFM3-Audio).
+4. **LFM3-Audio `session.update` Schema & Instructions Lock:**
+   - `instructions` must begin with `"Respond with interleaved text and audio."` alongside `output_modalities: ["text", "audio"]`.
+   - Do **not** send unsupported `voice` or transcription-only `language` fields in `realtime` mode; `instructions` and `tools` are locked once the first audio/message arrives.
+5. **Barge-In `response_id` Filtering & Sequencing:**
+   - After `response.cancel`, `llama-server` may emit 1–2 in-flight tail deltas before `response.done` (`status: "cancelled"`). The client filters incoming deltas against the active `response_id`, clears active `response_id` and sets `awaiting_cancel = true` immediately on cancel, holds the first ~300 ms of speech before sending `input_audio_buffer.append` (to filter transient coughs/clicks), and defers `response.create` (`pending_response = true`) until the cancelled `response.done` settles.
+6. **Real-Time Factor (RTF) Sensitivity:** Validate RTF ≥ 1.2× on the LAN host (or mock harness) before debugging ESP32 playback.
 
 ### Target Wire Protocol Sequence (PoC)
-1. **Connect:** `ws://<LAN_IP>:8080/v1/realtime` with `Authorization: Bearer <API_KEY>`.
-2. **Handshake:** Receive `session.created` → read `audio.input.format.rate` → send `session.update` configuring:
+1. **Connect:** `ws://<LAN_IP>:8082/v1/realtime?model=lfm3-audio-2b` with optional `Authorization: Bearer <API_KEY>`.
+2. **Handshake:** Receive `session.created` → read `audio.input.format.rate` & `audio.output.format.rate` → send `session.update` configuring:
    - `session.type = "realtime"`
-   - `instructions` (agent persona system prompt)
-   - Output voice/language (e.g., `female` / `male` per `GET /props` voices list)
-   - Output modalities (`["audio", "text"]` so the AMOLED can also render live captions)
-3. **User Speaks:** Stream 20–40 ms PCM16 16 kHz frames via `input_audio_buffer.append` (Base64).
-4. **End of Utterance (Client VAD Silence Threshold):** Send `input_audio_buffer.commit` followed by `response.create`.
-5. **Agent Answers:** Receive `response.audio.delta` (decode Base64 → downsample 24 kHz→16 kHz → playback ring buffer) and optional `response.audio_transcript.delta` (update UI caption) until `response.done`.
+   - `instructions` (starting with `"Respond with interleaved text and audio."`)
+   - `output_modalities = ["text", "audio"]`
+3. **User Speaks:** Hold ~300 ms onset confirmation (while keeping ~350 ms pre-roll), then stream 20–40 ms PCM16 16 kHz frames via `input_audio_buffer.append` (Base64).
+4. **End of Utterance (Client VAD Silence Threshold ~650 ms):** Send `input_audio_buffer.commit` followed by `response.create` (or defer `response.create` until cancelled `response.done` if `awaiting_cancel` is active).
+5. **Agent Answers:** Receive `response.output_audio.delta` (decode Base64 → downsample 24 kHz→16 kHz → playback ring buffer) and `response.output_text.delta` (update UI caption) matching active `response_id` until `response.done`.
 6. **Barge-In (User Speaks During Agent Playback):**
-   - Local AEC + VAD triggers speech start while state == `SPEAKING`.
-   - Immediately mute/flush the local speaker jitter buffer.
-   - Send `response.cancel` over WebSocket.
-   - Flush pre-roll buffer (~250 ms of captured speech) via `input_audio_buffer.append` so the first word is never lost.
+   - Local AEC + VAD triggers speech start while state == `SPEAKING` (+6 dB / 220 ms hysteresis).
+   - Immediately mute/flush the local speaker jitter buffer, clear active `response_id`, set `awaiting_cancel = true`, and send `response.cancel` over WebSocket.
+   - Flush pre-roll buffer (~350 ms of captured speech) via `input_audio_buffer.append` once utterance confirms so the first word is never lost.
 
 ---
 
 ## 5. ESP32-S3 Firmware Architecture
 
-### Framework Choice: ESP-IDF (v5.5+)
-Use **ESP-IDF (C/C++)** rather than Arduino for this project because:
-- First-class support for **ESP-SR** (`esp_afe` / `esp_aec` / `vadnet`) compiled with ESP32-S3 SIMD acceleration
-- Official Waveshare managed BSP (`waveshare/esp32_s3_touch_amoled_1_8`) supporting V2 CO5300 + CST820 + LVGL 9
+### Framework Choice: ESP-IDF (v5.5+ via PlatformIO + `pioarduino`)
+Use **ESP-IDF 5.5 (`pioarduino` `55.03.312-1`, `framework = espidf`, `src_dir = main`)** in `firmware/` because:
+- First-class support for **ESP-SR** (`esp_afe` / `esp_aec` / WebRTC NS+VAD) compiled with ESP32-S3 SIMD acceleration
+- Official Waveshare managed BSP (`waveshare/esp32_s3_touch_amoled_1_8 ^2.0.3`) supporting V2 CO5300 + CST820 + LVGL 9
 - Deterministic FreeRTOS dual-core pinning and explicit Internal SRAM vs. Octal PSRAM allocation (`heap_caps_malloc`)
+- Built cleanly with `cd firmware && pio run` alongside the existing root Arduino V2 hardware-diagnostic starter
 
 ### Full-Duplex Audio & AEC Pipeline (The Critical Engineering Piece)
 
 Because the microphone and speaker sit centimeters apart inside the small black enclosure, naive full-duplex causes the model to hear itself and self-interrupt immediately.
 
-1. **Single Shared Full-Duplex I2S Bus @ 16 kHz, 16-bit:**
+1. **Single Shared Full-Duplex I2S Bus @ 16 kHz, 16-bit Stereo:**
    - ESP-SR AEC requires **16 kHz** input. Running the single ES8311 I2S bus at 16 kHz eliminates uplink resampling completely.
 2. **ES8311 Hardware Digital Feedback Loopback for Sample-Aligned AEC:**
    - Software ring-buffer echo references tend to drift between DMA TX and RX.
@@ -153,15 +157,14 @@ Because the microphone and speaker sit centimeters apart inside the small black 
    - Because both channels share the same I2S frame clock, the echo reference is sample-aligned with zero drift.
    - *(Fallback plan: If acoustic enclosure delay or gain mismatch needs compensation, pair with a fixed-sample delay offset or software reference buffer tuning.)*
 3. **ESP-SR Audio Front-End (AFE):**
-   - Input format: `"MR"` (1 mic + 1 playback reference).
-   - Mode: **`AEC_MODE_FD_LOW_COST`** (linear adaptive filter + nonlinear residual echo suppression, recommended by Espressif for full-duplex conversation).
-   - Enable **Noise Suppression (NS)** and **VAD** (`AFE_VAD`) inside AFE.
-4. **Pre-Roll Circular Buffer (250–300 ms):**
-   - Continuously retain the last ~300 ms of AEC-cleaned 16 kHz audio in PSRAM. When VAD transitions from silence → speech (especially during barge-in), send the pre-roll first so the user's opening syllable is preserved.
+   - Input format: **`"RM"`** (Left = playback reference `R`, Right = microphone `M`, matching ES8311 `0x44 = 0x48` interleaved frames).
+   - Init: `afe_config_init("RM", NULL, AFE_TYPE_FD, AFE_MODE_LOW_COST)` with `wakenet_init = false`, `aec_mode = AEC_MODE_FD_LOW_COST` (linear adaptive filter + nonlinear residual echo suppression), WebRTC Noise Suppression (`AFE_NS_MODE_WEBRTC`), and WebRTC VAD (`vad_model_name = NULL`).
+4. **Pre-Roll Circular Buffer (350 ms) & 300 ms Onset Confirmation:**
+   - Continuously retain the last ~350 ms of AEC-cleaned 16 kHz audio in PSRAM. When VAD transitions from silence → speech and holds for 300 ms (or 220 ms + 6 dB margin during `SPEAKING`), flush the pre-roll first so the user's opening syllable is preserved without false cough/click triggers.
 5. **Downlink Resampling & Jitter Buffer:**
-   - Decode incoming Base64 `response.audio.delta` chunks (24 kHz PCM16) in PSRAM.
-   - Apply a lightweight **3:2 streaming downsampler (24 kHz → 16 kHz)** (linear interpolation with simple low-pass filter or `esp-dsp` polyphase FIR).
-   - Feed a **150–250 ms jitter ring buffer** before starting speaker playback to absorb LAN Wi-Fi and token-generation burstiness.
+   - Decode incoming Base64 `response.output_audio.delta` chunks (24 kHz PCM16) in PSRAM.
+   - Apply a lightweight **3:2 streaming downsampler (24 kHz → 16 kHz)** (3-tap low-pass + linear interpolation).
+   - Feed a **180 ms jitter pre-buffer / 256 KB ring buffer** before starting speaker playback to absorb LAN Wi-Fi and token-generation burstiness.
    - Manage speaker amp `PA_EN` (GPIO 46) cleanly to prevent boot/shutdown pops.
 
 ### FreeRTOS Task & Dual-Core Pinning
@@ -187,29 +190,29 @@ Because the microphone and speaker sit centimeters apart inside the small black 
 
 ## 6. Display & Interaction Design (368×448 AMOLED)
 
-Use a **true-black (`#000000`) AMOLED theme** to maximize contrast, reduce power draw, and minimize burn-in.
+Use a **true-black (`#000000`) AMOLED theme** to maximize contrast, reduce power draw, and minimize burn-in. **No cyan is used anywhere in the palette.**
 
 ### Screen Wireframe (`368 × 448` Portrait)
 
 ```text
 +----------------------------------+  y = 0
-| [WiFi]  LAN: 12ms       [87% ⚡] |  Status Bar (AXP2101 battery, WS status)
+| [WiFi]  12ms    [Orb*]  [87% ⚡] |  Status Bar (Wi-Fi/RTT, Orb Customizer, AXP2101 battery)
 +----------------------------------+  y = 44
 |                                  |
 |          ╭────────────╮          |
-|          │   ( ◉‿◉ )  │          |  Agent Avatar / Identity Badge
-|          │  Orb/Ring  │          |  (Animated ring pulses with mic/spk RMS)
+|          │   (  ◉  )  │          |  Customizable Agent Orb (Tap: start/interrupt;
+|          │  Orb/Ring  │          |  Long-press: customize color/style; Swipe: switch agent)
 |          ╰────────────╯          |
 |                                  |
-|            "NOVA"                |  Active Agent Name (Large, crisp font)
-|      Local Voice Assistant       |  Agent Role / Model Subtitle
+|            "EMBER"               |  Active Agent Name (Large, crisp font)
+|       Local Voice Agent          |  Agent Role / Status Subtitle
 |                                  |
 |        ● LISTENING ...           |  State Pill (color-coded)
 +----------------------------------+  y = 300
 |  "Sure, I can help you plan      |  Scrolling 2–3 line live caption /
-|   that hardware test..."         |  status area (optional transcript)
+|   that hardware test..."         |  status area (response.output_text.delta)
 +----------------------------------+  y = 376
-|  [  MUTE  ]        [ END / STOP] |  Large touch targets (CST820)
+|  [  MUTE  ]    [ START / STOP ]  |  Large touch targets (CST820)
 +----------------------------------+  y = 448
 ```
 
@@ -217,22 +220,27 @@ Use a **true-black (`#000000`) AMOLED theme** to maximize contrast, reduce power
 
 | State | Ring / Indicator Color | Meaning |
 | :--- | :--- | :--- |
-| `BOOTING` / `WIFI_WAIT` | Dim White / Amber | Initializing BSP, AXP2101, ES8311, joining Wi-Fi |
-| `READY` (App Idle) | Soft Gray | Connected to Wi-Fi; tap **"Start Talking"** (or press `BOOT`) to open realtime session |
-| `LISTENING` | Cyan / Teal | Mic active, AEC+VAD listening; ring animates to user voice RMS |
-| `THINKING` | Amber (spinning) | Utterance committed (`input_audio_buffer.commit`), awaiting first audio delta |
-| `SPEAKING` | Emerald / Violet | Agent speaking; ring animates to playback RMS; **AEC+VAD armed for barge-in** |
-| `INTERRUPTED` | Flash White → Cyan | Barge-in triggered; local buffer flushed & `response.cancel` sent |
-| `TOOL_CALLING` *(Phase 2)* | Indigo Pulse | Harness executing tool (caption shows e.g. *"Running: get_weather"*) |
-| `ERROR` / `RECONNECTING` | Red | Server unreachable or WS dropped; auto-backoff reconnect + manual retry button |
+| `BOOTING` / `WIFI_WAIT` | Dim White / Warm Amber | Initializing BSP, AXP2101, ES8311, joining Wi-Fi |
+| `READY` (App Idle) | Soft Slate / Dim Accent | Connected to Wi-Fi; tap **"Start Talking"** / Orb (or press `BOOT`) to open realtime session |
+| `LISTENING` | Active Orb Accent (`#F59E0B` default) | Mic active, AEC+VAD listening; orb animates to user voice RMS |
+| `THINKING` | Gold (`#EAB308`, spinning arc) | Utterance committed (`input_audio_buffer.commit`), awaiting first audio delta |
+| `SPEAKING` | Emerald (`#10B981`) or Active Accent | Agent speaking; orb animates to playback RMS; **AEC+VAD armed for barge-in** |
+| `INTERRUPTED` | Flash White → Active Accent | Barge-in triggered; local buffer flushed & `response.cancel` sent |
+| `TOOL_CALLING` *(Phase 2)* | Indigo / Violet (`#8B5CF6`) Pulse | Harness executing tool (caption shows e.g. *"Running: get_weather"*) |
+| `ERROR` / `RECONNECTING` | Crimson (`#EF4444`) | Server unreachable or WS dropped; auto-backoff reconnect + manual retry button |
 
-### Physical Controls & Power Behavior
+### Customizable Orb & Physical Controls
+- **On-Device Orb Customizer (Persisted in NVS):**
+  - Open via top-bar `Orb` button or long-pressing the center orb.
+  - **6 Curated Non-Cyan Presets:** Amber (`#F59E0B`, default), Emerald (`#10B981`), Violet (`#8B5CF6`), Coral (`#FB7185`), Gold (`#EAB308`), Crimson (`#EF4444`) — plus arbitrary `#RRGGBB` overrides from `harness.agent.info`.
+  - **3 Orb Styles:** `Pulse Orb` (breathing solid core + halo), `Sonar Rings` (concentric reactive ripples), and `Arc Halo` (rotating segmented energy ring).
 - **Touch (`CST820`):**
-  - Tap center orb during `SPEAKING` → manual force-interrupt (backup for noisy environments).
-  - Bottom buttons → **Mute Mic** (hard mute before uplink) and **Start / End Session**.
+  - Tap center orb in `READY` → start session; tap during `SPEAKING` → manual force-interrupt (backup for noisy environments).
+  - Horizontal swipe on center card → emit `harness.agent.switch` (Phase 2).
+  - Bottom buttons → **Mute Mic** (hard mute before uplink) and **Start Talking / End**.
 - **Side Buttons:**
-  - `BOOT` short-press → Toggle Mute; long-press → End/Start session.
-  - `PWR` short-press → Dim/wake AMOLED (CO5300 brightness register); long-press → Clean shutdown via AXP2101.
+  - `BOOT` short-press → Toggle Mute (or Start session if `READY`); long-press → End/Start session.
+  - `PWR` short-press → Dim/wake AMOLED (CO5300 brightness register); long-press → Clean shutdown via AXP2101 (`0x10` bit 0).
 - **Auto-Dim:** Dim display after 30 s of `READY` idle to protect the AMOLED panel.
 
 ---
@@ -243,9 +251,9 @@ To avoid rewriting firmware when moving from raw `llama-server` to a full tool-c
 
 1. **Single Transport Seam:** The Harness exposes the exact same `/v1/realtime` WebSocket endpoint to the ESP32-S3 and manages upstream connections to `llama-server` (and optionally a stronger separate reasoning/tool LLM alongside the fast audio model).
 2. **Backwards-Compatible Extension Events:** The ESP32 parser silently ignores unknown JSON event types in PoC, and recognizes optional custom `harness.*` events once the Harness is introduced:
-   - `harness.agent.info` → `{ "id": "nova", "name": "Nova", "role": "Home Ops", "accent_color": "#00E5FF", "avatar_id": "orb_1" }` (dynamically updates the AMOLED Agent Card).
+   - `harness.agent.info` → `{ "id": "ember", "name": "Ember", "role": "Home Ops", "accent_color": "#F59E0B", "orb_style": "rings" }` (dynamically updates the AMOLED Agent Card and orb).
    - `harness.tool.status` → `{ "call_id": "...", "name": "calendar_create", "state": "running" | "done" | "error" }` (transitions UI to `TOOL_CALLING` state and shows subtle progress feedback).
-   - `harness.tool.confirm` *(optional future)* → Prompts a `[Allow]` / `[Deny]` modal on the 1.8" touchscreen before running destructive tools.
+   - `harness.tool.confirm` *(optional future)* → Prompts a `[Allow]` / `[Deny]` modal on the 1.8" touchscreen before running destructive tools, returning `harness.tool.confirm_result`.
    - `harness.agent.switch` *(client → server)* → Triggered by swiping left/right on the AMOLED Agent Card to switch between configured agents.
 3. **Tool Lifecycle Stays Off-Device:** When `llama-server` emits a function call, the Harness intercepts it, executes the tool (via MCP or native plugins), submits the tool result back to the model, and streams the model's spoken follow-up audio back to the ESP32.
 4. **Optional Future Transport Upgrade:** If Wi-Fi latency or Base64 overhead becomes limiting, add a negotiated binary WebSocket sub-protocol (`audio/opus` or raw binary PCM frames) between ESP32 and the Harness without altering the audio/AEC pipeline.
@@ -255,31 +263,37 @@ To avoid rewriting firmware when moving from raw `llama-server` to a full tool-c
 ## 8. Proposed Repository Layout
 
 ```text
-voice-agent-amoled/
+esp32-s3-amoled-1.8/
 ├── PLAN.md                         # This architectural plan
+├── platformio.ini / src/           # Root Arduino V2 hardware diagnostic starter
 ├── docs/
-│   ├── protocol.md                 # Exact /v1/realtime + harness.* JSON event schemas
-│   └── hardware-v2-notes.md        # Verified V2 pinout, I2C scan output, AEC tuning notes
+│   ├── protocol.md                 # Exact /v1/realtime GA + harness.* JSON event schemas
+│   └── hardware-v2-notes.md        # Verified V2 pinout, I2C map, AXP2101 & AEC tuning notes
 ├── server/
 │   ├── run-llama-server.sh         # Reproducible llama-server launch script + flags
-│   ├── test_realtime_cli.py        # Desktop Python test client (mic/spk) to validate server independently
+│   ├── mock_realtime_server.py     # Stdlib Python /v1/realtime mock server for offline CI tests
+│   ├── test_realtime_cli.py        # Desktop Python test client (--synthetic / --wav / --mic)
 │   └── prompts/
-│       └── default_agent.txt       # PoC agent persona system prompt
+│       └── default_agent.txt       # PoC agent persona system prompt (Ember)
 ├── harness/                        # Phase 2 placeholder (Python/TypeScript WS proxy + tool/MCP runner)
 │   └── README.md
-└── firmware/                       # ESP-IDF v5.5+ project
+└── firmware/                       # Primary ESP-IDF v5.5+ Voice Agent (PlatformIO + pioarduino)
+    ├── platformio.ini              # pioarduino 55.03.312-1 (IDF 5.5.5), src_dir = main
     ├── CMakeLists.txt
-    ├── partitions.csv              # 16 MB Flash layout (App + OTA + NVS + SPIFFS/LittleFS assets)
+    ├── partitions.csv              # 16 MB Flash layout (NVS + OTA + SPIFFS)
     ├── sdkconfig.defaults          # PSRAM OPI, ESP-SR, LVGL 9, Wi-Fi tuning
     ├── sdkconfig.defaults.local    # (gitignored) Wi-Fi SSID/PASS, LAN_SERVER_IP, API_KEY
+    ├── test_host/                  # Host-compiled unit tests (resampler + PSRAM ring buffer)
     └── main/
-        ├── idf_component.yml       # waveshare/esp32_s3_touch_amoled_1_8, espressif/esp-sr, lvgl
+        ├── idf_component.yml       # waveshare/esp32_s3_touch_amoled_1_8, espressif/esp-sr, esp_websocket_client, lvgl
+        ├── Kconfig.projbuild       # Menuconfig Voice Agent & Orb defaults
+        ├── app_config.h            # Unified config + optional local_config.h overrides
         ├── app_main.c
-        ├── board/                  # BSP init, ES8311 reg 0x44 setup, AXP2101 battery monitor
-        ├── audio/                  # Full-duplex I2S driver, ESP-SR AFE/AEC/VAD, 24k->16k resampler, ring buffers
-        ├── net/                    # Wi-Fi STA manager, /v1/realtime WS client, JSON/Base64 codec
+        ├── board/                  # BSP init, AXP2101 telemetry/PWR/shutdown, BOOT button
+        ├── audio/                  # Full-duplex I2S, ES8311 reg 0x44, ESP-SR AFE("RM")/AEC/VAD, 24k->16k resampler
+        ├── net/                    # Wi-Fi STA manager, /v1/realtime GA WS client, JSON/Base64 codec
         ├── session/                # Conversation & barge-in state machine
-        └── ui/                     # LVGL 9 Agent Card, waveform widget, touch/button handlers
+        └── ui/                     # LVGL 9 Agent Card, customizable non-cyan orb + NVS theme, touch/confirm modals
 ```
 
 ---
@@ -345,10 +359,10 @@ voice-agent-amoled/
 
 ---
 
-## 11. Open Decisions to Finalize Before Implementation
+## 11. Finalized Decisions
 
-1. **LAN Host Specs & Model Selection:** What GPU/CPU + VRAM does the LAN computer have? (Determines whether to start with `LFM3-Audio-2B` on stock `llama-server` vs. `MiniCPM-o 4.5` on `llama.cpp-omni`.)
-2. **Power Setup for PoC:** Running tethered via USB-C only, or is a 3.7V LiPo cell connected to the MX1.25 header (enabling untethered AXP2101 battery display)?
-3. **Session Start UX:** Should booting the device land on a `"Tap to Connect"` Agent Card, or immediately auto-connect and enter `LISTENING` mode on boot?
-4. **LAN Discovery:** Hardcoded static LAN IP in gitignored `sdkconfig.defaults.local` for PoC, or mDNS (`esp_mdns`) discovery of `_llama._tcp.local`?
-5. **Initial Agent Persona:** Name, visual theme/color, and system prompt for the default PoC agent displayed on the 1.8" AMOLED screen.
+1. **LAN Host Specs & Model Selection:** Local host (`192.168.1.199`, Ryzen 7 9700X + AMD RX 7900 XT 20 GB) running stock `llama.cpp` (`0.8.0-dev+` ROCm build) with **`LFM3-Audio-2B-Q4_K_M.gguf` + `mmproj`** on port **`8082`**.
+2. **Power Setup for PoC:** Auto-detected at runtime via AXP2101 (`isBatteryConnect()` / `0x00` bit 3) — shows live LiPo `%` + charging status when connected, or USB-C `VBUS` status when tethered.
+3. **Session Start UX:** Boot to `"Tap to Talk"` (`READY`) Agent Card; tap the orb or `START TALKING` button (or press `BOOT`) to open `/v1/realtime` and enter `LISTENING`.
+4. **LAN Discovery:** Static LAN IP (`192.168.1.199:8082`) configured via Kconfig defaults and overridden in gitignored `firmware/sdkconfig.defaults.local` / `firmware/main/local_config.h`.
+5. **Initial Agent Persona & Orb:** **"EMBER"** (`Local Voice Agent`), default warm Amber (`#F59E0B`), **no cyan anywhere**, with an on-device Orb Customizer (6 curated non-cyan color presets + 3 orb styles) persisted in NVS.

@@ -1,5 +1,14 @@
 # PlatformIO build & environment artifacts
 .pio/
+firmware/.pio/
+firmware/build/
+firmware/managed_components/
+firmware/dependencies.lock
+firmware/sdkconfig
+firmware/sdkconfig.old
+firmware/sdkconfig.waveshare_*
+firmware/sdkconfig.defaults.local
+firmware/main/local_config.h
 .vscode/.browse.c_cpp.db*
 .vscode/c_cpp_properties.json
 .vscode/launch.json
@@ -9,6 +18,9 @@
 compile_commands.json
 .clangd/
 .cache/
+**/__pycache__/
+*.pyc
+server/*.wav
 *.bak
 *.swp
 .DS_Store

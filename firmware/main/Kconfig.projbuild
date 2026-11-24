@@ -92,6 +92,11 @@ menu "Voice Agent Configuration"
             int "Barge-In Extra Margin Over Noise Floor (dB)"
             default 6
             range 0 18
+
+        config VOICE_ECHO_SHIELD_VOL_PCT
+            int "Auto Echo Shield Volume Threshold (%)"
+            default 80
+            range 60 100
     endmenu
 
 endmenu

@@ -4,6 +4,7 @@
 #include <stddef.h>
 #include <stdint.h>
 
+#include "audio_guard.h"
 #include "esp_err.h"
 
 #ifdef __cplusplus
@@ -30,6 +31,11 @@ bool audio_engine_is_playback_active(void);
 
 void audio_engine_get_levels(uint8_t *mic_rms_pct, uint8_t *spk_rms_pct);
 void audio_engine_set_pa_enabled(bool enabled);
+
+esp_err_t audio_engine_set_volume(int pct);
+int       audio_engine_get_volume(void);
+void      audio_engine_set_echo_guard(audio_echo_guard_mode_t mode, int auto_shield_vol_pct);
+bool      audio_engine_is_echo_shield_active(void);
 
 #ifdef __cplusplus
 }

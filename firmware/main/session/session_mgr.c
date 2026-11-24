@@ -4,6 +4,7 @@
 #include <string.h>
 
 #include "app_config.h"
+#include "app_prefs.h"
 #include "audio_engine.h"
 #include "esp_log.h"
 #include "esp_timer.h"
@@ -431,4 +432,51 @@ void session_mgr_switch_agent(const char *direction) {
 
 uint32_t session_mgr_get_rtt_ms(void) {
     return s_rtt_ms;
+}
+
+void session_mgr_set_volume(int pct, bool save_nvs, bool show_toast) {
+    const int actual = app_prefs_set_volume(pct, save_nvs);
+    audio_engine_set_volume(actual);
+
+    app_prefs_t prefs;
+    app_prefs_get(&prefs);
+    ui_app_sync_audio_prefs(actual, prefs.echo_guard_mode, prefs.auto_shield_vol_pct);
+
+    if (show_toast) {
+        char buf[40];
+        const bool shielded =
+            (prefs.echo_guard_mode == AUDIO_GUARD_STRICT) ||
+            (prefs.echo_guard_mode == AUDIO_GUARD_AUTO && actual >= prefs.auto_shield_vol_pct);
+        snprintf(buf, sizeof(buf), shielded ? "Vol %d%% (Shield)" : "Volume %d%%", actual);
+        ui_app_show_toast(buf);
+    }
+}
+
+void session_mgr_adjust_volume(int delta_pct, bool show_toast) {
+    app_prefs_t prefs;
+    app_prefs_get(&prefs);
+    session_mgr_set_volume(prefs.speaker_volume_pct + delta_pct, true, show_toast);
+}
+
+void session_mgr_set_echo_guard(audio_echo_guard_mode_t mode, int auto_shield_vol_pct, bool show_toast) {
+    app_prefs_set_echo_guard(mode, auto_shield_vol_pct);
+
+    app_prefs_t prefs;
+    app_prefs_get(&prefs);
+    audio_engine_set_echo_guard(prefs.echo_guard_mode, prefs.auto_shield_vol_pct);
+    ui_app_sync_audio_prefs(prefs.speaker_volume_pct, prefs.echo_guard_mode, prefs.auto_shield_vol_pct);
+
+    if (show_toast) {
+        char buf[40];
+        snprintf(buf, sizeof(buf), "Echo Guard: %s", audio_guard_mode_name(prefs.echo_guard_mode));
+        ui_app_show_toast(buf);
+    }
+}
+
+void session_mgr_cycle_echo_guard(bool show_toast) {
+    app_prefs_t prefs;
+    app_prefs_get(&prefs);
+    const audio_echo_guard_mode_t next =
+        (audio_echo_guard_mode_t)(((int)prefs.echo_guard_mode + 1) % AUDIO_GUARD_MODE_COUNT);
+    session_mgr_set_echo_guard(next, prefs.auto_shield_vol_pct, show_toast);
 }

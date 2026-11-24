@@ -3,6 +3,7 @@
 #include <stdbool.h>
 #include <stdint.h>
 
+#include "audio_guard.h"
 #include "esp_err.h"
 
 #ifdef __cplusplus
@@ -37,6 +38,11 @@ void     session_mgr_force_interrupt(void);
 void     session_mgr_confirm_tool(const char *call_id, bool approved);
 void     session_mgr_switch_agent(const char *direction);
 uint32_t session_mgr_get_rtt_ms(void);
+
+void session_mgr_set_volume(int pct, bool save_nvs, bool show_toast);
+void session_mgr_adjust_volume(int delta_pct, bool show_toast);
+void session_mgr_set_echo_guard(audio_echo_guard_mode_t mode, int auto_shield_vol_pct, bool show_toast);
+void session_mgr_cycle_echo_guard(bool show_toast);
 
 #ifdef __cplusplus
 }

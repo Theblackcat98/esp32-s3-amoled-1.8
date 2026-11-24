@@ -1,10 +1,12 @@
 idf_component_register(
     SRCS
         "app_main.c"
+        "app_prefs.c"
         "board/board_pmu.c"
         "board/board_hw.c"
         "audio/audio_ringbuf.c"
         "audio/audio_resampler.c"
+        "audio/audio_guard.c"
         "audio/audio_engine.c"
         "net/wifi_mgr.c"
         "net/realtime_ws.c"

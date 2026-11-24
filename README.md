@@ -4,7 +4,7 @@ Full-duplex realtime voice agent and Board Support Package (BSP) for the **Waves
 
 ## Repository Overview
 
-- `firmware/` — **Primary ESP-IDF v5.5.5 Voice Agent firmware** (PlatformIO + `pioarduino`, Waveshare V2 BSP, ESP-SR full-duplex AEC + WebRTC NS/VAD, LVGL 9 true-black customizable Orb UI).
+- `firmware/` — **Primary ESP-IDF v5.5.5 Voice Agent firmware** (PlatformIO + `pioarduino`, Waveshare V2 BSP, ESP-SR full-duplex AEC + WebRTC NS/VAD, live speaker volume + high-volume echo guard, remappable hardware buttons, LVGL 9 true-black customizable Orb UI).
 - `server/` — Host `llama-server` launcher (`run-llama-server.sh`), Python CLI test client (`test_realtime_cli.py`), stdlib offline `/v1/realtime` mock server (`mock_realtime_server.py`), and Ember system prompt.
 - `docs/` — Wire protocol specification (`docs/protocol.md`) and V2 hardware/AEC tuning notes (`docs/hardware-v2-notes.md`).
 - `harness/` — Phase 2 LAN Agent Harness boundary specification (`harness/README.md`).
@@ -79,17 +79,27 @@ pio run -t upload && pio device monitor
 python3 server/mock_realtime_server.py --port 18082 &
 python3 server/test_realtime_cli.py --url http://127.0.0.1:18082 --synthetic
 
-# Run host DSP unit tests (24k->16k resampler + ring buffer)
+# Run host DSP & echo-guard unit tests (24k->16k resampler, ring buffer, high-vol guard)
 gcc -Wall -Wextra -Werror -O2 -I firmware/main/audio \
   firmware/test_host/test_audio_dsp.c \
   firmware/main/audio/audio_resampler.c \
-  firmware/main/audio/audio_ringbuf.c -lm -o /tmp/test_audio_dsp && /tmp/test_audio_dsp
+  firmware/main/audio/audio_ringbuf.c \
+  firmware/main/audio/audio_guard.c -lm -o /tmp/test_audio_dsp && /tmp/test_audio_dsp
 
 # Launch live LFM3-Audio-2B server on LAN (manual GPU run)
 ./server/run-llama-server.sh
 ```
 
-### 3. Root Hardware Diagnostic Starter
+### 3. On-Device Volume, Button Remapping & High-Volume Echo Guard
+
+- **Speaker Volume & Settings:** Tap the top-bar volume pill (`75%`) to adjust live **ES8311** speaker volume (`0–100%` via slider or `±5%` buttons, persisted in NVS) or long-press the orb to jump straight to the **Orb** customizer tab.
+- **High-Volume Echo Guard (`Auto` / `Strict` / `Always`):** Prevents loud speaker playback and acoustic hangover tails from interrupting the agent's own voice:
+  - **Auto (default):** Uses a dynamic speaker-coupled echo gate below `80%` volume and automatically enables a half-duplex shield at/above `80%` (configurable `60–100%`).
+  - **Strict:** Always shields the mic from playback self-triggers at any volume (interrupt via orb tap or mapped `Interrupt` button).
+  - **Always:** Forces full-duplex voice barge-in at all volumes with aggressive volume-scaled echo gating.
+- **Button Remapping:** Open **Settings -> Buttons** to assign `BOOT Short`, `BOOT Long`, `PWR Short`, or `PWR Long` to `Talk / Mute`, `Start / Stop`, `Mute Mic`, `Interrupt`, `Vol +10%`, `Vol -10%`, `Echo Guard`, `Dim Screen`, `Power Off`, or `None`.
+
+### 4. Root Hardware Diagnostic Starter
 
 ```bash
 pio run

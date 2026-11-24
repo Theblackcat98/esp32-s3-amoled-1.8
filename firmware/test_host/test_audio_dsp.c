@@ -3,6 +3,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 
+#include "audio_guard.h"
 #include "audio_resampler.h"
 #include "audio_ringbuf.h"
 
@@ -120,10 +121,85 @@ static void test_ringbuf_wrap_flush_overwrite(void) {
     printf("[PASS] test_ringbuf_wrap_flush_overwrite\n");
 }
 
+static void test_audio_guard_modes(void) {
+    audio_guard_result_t r;
+
+    /* 1. Idle state */
+    const audio_guard_input_t idle_in = {
+        .mode                 = AUDIO_GUARD_AUTO,
+        .volume_pct           = 95,
+        .auto_shield_vol_pct  = 80,
+        .playback_busy        = false,
+        .in_hangover          = false,
+        .noise_db             = -56.0f,
+        .spk_env_db           = -96.0f,
+        .base_barge_margin_db = 6,
+        .base_barge_ms        = 220,
+    };
+    audio_guard_eval(&idle_in, &r);
+    assert(!r.block_voice_trigger && !r.shield_active);
+    assert(fabsf(r.gate_db - (-49.0f)) < 0.01f);
+    assert(r.req_onset_ms == 96);
+
+    /* 2. Moderate-volume Auto during playback uses dynamic echo gate + scaled onset */
+    audio_guard_input_t mod_in = idle_in;
+    mod_in.playback_busy = true;
+    mod_in.volume_pct    = 70;
+    mod_in.spk_env_db    = -12.0f;
+    audio_guard_eval(&mod_in, &r);
+    assert(!r.block_voice_trigger && !r.shield_active);
+    /* erle = 22 - 0.35*10 = 18.5; echo_gate = -12 - 18.5 + 6 = -24.5 > noise_gate (-42) */
+    assert(fabsf(r.gate_db - (-24.5f)) < 0.05f);
+    assert(r.req_onset_ms == 270);
+
+    /* 3. High-volume Auto (>= 80%) shields playback from self-interruption */
+    audio_guard_input_t hi_auto = mod_in;
+    hi_auto.volume_pct = 85;
+    audio_guard_eval(&hi_auto, &r);
+    assert(r.block_voice_trigger && r.shield_active);
+
+    /* 4. High-volume Auto hangover blocks echo tails; moderate hangover raises gate */
+    hi_auto.playback_busy = false;
+    hi_auto.in_hangover   = true;
+    hi_auto.volume_pct    = 80;
+    audio_guard_eval(&hi_auto, &r);
+    assert(r.block_voice_trigger && r.shield_active);
+
+    hi_auto.volume_pct = 60;
+    audio_guard_eval(&hi_auto, &r);
+    assert(!r.block_voice_trigger && !r.shield_active);
+    assert(r.req_onset_ms == 160);
+    assert(fabsf(r.gate_db - (-30.0f)) < 0.05f);
+
+    /* 5. Strict shields at both low and high volumes */
+    audio_guard_input_t strict_in = mod_in;
+    strict_in.mode       = AUDIO_GUARD_STRICT;
+    strict_in.volume_pct = 40;
+    audio_guard_eval(&strict_in, &r);
+    assert(r.block_voice_trigger && r.shield_active);
+    strict_in.volume_pct = 100;
+    audio_guard_eval(&strict_in, &r);
+    assert(r.block_voice_trigger && r.shield_active);
+
+    /* 6. Always mode stays full-duplex even at 100% with tight ERLE gate + 420ms onset */
+    audio_guard_input_t always_in = mod_in;
+    always_in.mode       = AUDIO_GUARD_ALWAYS;
+    always_in.volume_pct = 100;
+    always_in.spk_env_db = -6.0f;
+    audio_guard_eval(&always_in, &r);
+    assert(!r.block_voice_trigger && !r.shield_active);
+    /* erle = 22 - 0.35*40 = 8.0; echo_gate = -6 - 8 + 6 = -8.0 */
+    assert(fabsf(r.gate_db - (-8.0f)) < 0.05f);
+    assert(r.req_onset_ms == 420);
+
+    printf("[PASS] test_audio_guard_modes\n");
+}
+
 int main(void) {
     test_resampler_24k_to_16k_streaming();
     test_resampler_passthrough();
     test_ringbuf_wrap_flush_overwrite();
+    test_audio_guard_modes();
     printf("ALL HOST DSP TESTS PASSED\n");
     return 0;
 }

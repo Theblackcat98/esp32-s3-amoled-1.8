@@ -5,6 +5,8 @@
 #include <string.h>
 
 #include "app_config.h"
+#include "app_prefs.h"
+#include "audio_guard.h"
 #include "audio_resampler.h"
 #include "audio_ringbuf.h"
 #include "bsp/esp-bsp.h"
@@ -18,6 +20,7 @@
 #include "esp_codec_dev_defaults.h"
 #include "esp_heap_caps.h"
 #include "esp_log.h"
+#include "esp_timer.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/semphr.h"
 #include "freertos/task.h"
@@ -49,15 +52,22 @@ static int16_t          *s_holdback_buf   = NULL;
 static int16_t          *s_rs_scratch     = NULL;
 static audio_resampler_t s_resampler;
 static SemaphoreHandle_t s_dl_mutex       = NULL;
+static SemaphoreHandle_t s_codec_ctrl_mux = NULL;
 
-static volatile bool    s_session_active  = false;
-static volatile bool    s_muted           = false;
-static volatile bool    s_speaking        = false;
-static volatile bool    s_playback_active = false;
-static volatile bool    s_downlink_done   = false;
-static volatile bool    s_flush_requested = false;
-static volatile uint8_t s_mic_rms_pct     = 0;
-static volatile uint8_t s_spk_rms_pct     = 0;
+static volatile bool    s_session_active      = false;
+static volatile bool    s_muted               = false;
+static volatile bool    s_speaking            = false;
+static volatile bool    s_playback_active     = false;
+static volatile bool    s_downlink_done       = false;
+static volatile bool    s_flush_requested     = false;
+static volatile uint8_t s_mic_rms_pct         = 0;
+static volatile uint8_t s_spk_rms_pct         = 0;
+static volatile int     s_volume_pct          = APP_SPEAKER_VOLUME_PCT;
+static volatile int     s_guard_mode          = AUDIO_GUARD_AUTO;
+static volatile int     s_auto_shield_vol_pct = APP_ECHO_SHIELD_VOL_PCT;
+static volatile int16_t s_spk_env_db_x10      = -960;
+static volatile uint32_t s_spk_last_active_ms = 0;
+static volatile bool    s_shield_active       = false;
 
 static uint8_t compute_rms_pct(const int16_t *pcm, size_t samples, float *out_db) {
     if (!pcm || samples == 0) {
@@ -173,7 +183,7 @@ static esp_err_t init_i2s_and_codec(void) {
         return ESP_FAIL;
     }
 
-    esp_codec_dev_set_out_vol(s_codec_dev, APP_SPEAKER_VOLUME_PCT);
+    esp_codec_dev_set_out_vol(s_codec_dev, __atomic_load_n(&s_volume_pct, __ATOMIC_ACQUIRE));
     esp_codec_dev_set_in_gain(s_codec_dev, (float)APP_MIC_GAIN_DB);
 
     /* Lock ES8311 reg 0x44 = 0x48: Left = DAC_ref (R), Right = ADC_mic (M) -> AFE "RM" */
@@ -237,11 +247,15 @@ static void audio_tx_task(void *arg) {
     int16_t stereo_buf[TX_FRAME_SAMPLES * 2];
     bool    primed      = false;
     int16_t last_sample = 0;
+    float   spk_env_db  = -96.0f;
 
     while (1) {
         if (__atomic_exchange_n(&s_flush_requested, false, __ATOMIC_ACQ_REL)) {
             audio_ringbuf_flush(&s_downlink_rb);
-            primed = false;
+            primed     = false;
+            spk_env_db = -96.0f;
+            __atomic_store_n(&s_spk_env_db_x10, (int16_t)-960, __ATOMIC_RELEASE);
+            __atomic_store_n(&s_spk_last_active_ms, 0U, __ATOMIC_RELEASE);
             __atomic_store_n(&s_playback_active, false, __ATOMIC_RELEASE);
             __atomic_store_n(&s_downlink_done, false, __ATOMIC_RELEASE);
 
@@ -289,13 +303,26 @@ static void audio_tx_task(void *arg) {
             }
         }
 
+        float spk_frame_db = -96.0f;
         if (got > 0) {
             last_sample = mono_buf[got - 1];
-            __atomic_store_n(&s_spk_rms_pct, compute_rms_pct(mono_buf, got, NULL), __ATOMIC_RELEASE);
+            __atomic_store_n(&s_spk_rms_pct, compute_rms_pct(mono_buf, got, &spk_frame_db), __ATOMIC_RELEASE);
+            if (spk_frame_db > -52.0f) {
+                const uint32_t ms = (uint32_t)(esp_timer_get_time() / 1000LL);
+                __atomic_store_n(&s_spk_last_active_ms, (ms != 0U) ? ms : 1U, __ATOMIC_RELEASE);
+            }
         } else {
             last_sample = 0;
             __atomic_store_n(&s_spk_rms_pct, 0, __ATOMIC_RELEASE);
         }
+
+        if (spk_frame_db > spk_env_db) {
+            spk_env_db = spk_frame_db;
+        } else {
+            spk_env_db -= 1.2f;
+            if (spk_env_db < -96.0f) spk_env_db = -96.0f;
+        }
+        __atomic_store_n(&s_spk_env_db_x10, (int16_t)(spk_env_db * 10.0f), __ATOMIC_RELEASE);
 
         for (size_t i = 0; i < TX_FRAME_SAMPLES; ++i) {
             stereo_buf[i * 2]     = mono_buf[i];
@@ -386,10 +413,43 @@ static void afe_fetch_task(void *arg) {
             __atomic_load_n(&s_speaking, __ATOMIC_ACQUIRE) ||
             __atomic_load_n(&s_playback_active, __ATOMIC_ACQUIRE);
 
+        const audio_echo_guard_mode_t guard_mode =
+            (audio_echo_guard_mode_t)__atomic_load_n(&s_guard_mode, __ATOMIC_ACQUIRE);
+        const int vol_pct        = __atomic_load_n(&s_volume_pct, __ATOMIC_ACQUIRE);
+        const int shield_vol_pct = __atomic_load_n(&s_auto_shield_vol_pct, __ATOMIC_ACQUIRE);
+        const int16_t spk_x10    = __atomic_load_n(&s_spk_env_db_x10, __ATOMIC_ACQUIRE);
+        const float   spk_env_db = (float)spk_x10 * 0.1f;
+        const uint32_t last_spk  = __atomic_load_n(&s_spk_last_active_ms, __ATOMIC_ACQUIRE);
+        const uint32_t now_ms    = (uint32_t)(esp_timer_get_time() / 1000LL);
+        const int hangover_ms    = audio_guard_hangover_ms(guard_mode);
+        const bool in_hangover =
+            !busy && (last_spk != 0U) && ((uint32_t)(now_ms - last_spk) < (uint32_t)hangover_ms);
+
+        const audio_guard_input_t guard_in = {
+            .mode                 = guard_mode,
+            .volume_pct           = vol_pct,
+            .auto_shield_vol_pct  = shield_vol_pct,
+            .playback_busy        = busy,
+            .in_hangover          = in_hangover,
+            .noise_db             = noise_db,
+            .spk_env_db           = spk_env_db,
+            .base_barge_margin_db = APP_BARGE_IN_MARGIN_DB,
+            .base_barge_ms        = APP_BARGE_IN_MS,
+        };
+        audio_guard_result_t guard_res;
+        audio_guard_eval(&guard_in, &guard_res);
+        __atomic_store_n(&s_shield_active, guard_res.shield_active, __ATOMIC_RELEASE);
+
         if (!in_utter) {
+            if (guard_res.block_voice_trigger) {
+                onset_ms = 0;
+                audio_ringbuf_flush(&s_preroll_rb);
+                continue;
+            }
+
             audio_ringbuf_write_overwrite(&s_preroll_rb, res->data, samples);
 
-            if (!busy && res->vad_state == VAD_SILENCE && frame_db < noise_db + 6.0f) {
+            if (!busy && !in_hangover && res->vad_state == VAD_SILENCE && frame_db < noise_db + 6.0f) {
                 noise_db = noise_db * 0.92f + frame_db * 0.08f;
                 if (noise_db < -72.0f) noise_db = -72.0f;
                 if (noise_db > -28.0f) noise_db = -28.0f;
@@ -400,13 +460,10 @@ static void afe_fetch_task(void *arg) {
                 continue;
             }
 
-            const float gate_db = busy
-                                      ? (noise_db + (float)APP_BARGE_IN_MARGIN_DB + 8.0f)
-                                      : (noise_db + 7.0f);
-            const bool trigger_frame = (res->vad_state == VAD_SPEECH) && (frame_db > gate_db);
+            const bool trigger_frame = (res->vad_state == VAD_SPEECH) && (frame_db > guard_res.gate_db);
             if (trigger_frame) {
                 onset_ms += frame_ms;
-                const int req_ms = busy ? APP_BARGE_IN_MS : 96;
+                const int req_ms = guard_res.req_onset_ms;
                 if (onset_ms >= req_ms) {
                     onset_ms   = 0;
                     in_utter   = true;
@@ -498,8 +555,15 @@ esp_err_t audio_engine_init(const audio_engine_callbacks_t *cbs, void *cb_ctx) {
     }
     s_cb_ctx = cb_ctx;
 
-    s_dl_mutex = xSemaphoreCreateMutex();
-    if (!s_dl_mutex) return ESP_ERR_NO_MEM;
+    app_prefs_t prefs;
+    app_prefs_get(&prefs);
+    __atomic_store_n(&s_volume_pct, prefs.speaker_volume_pct, __ATOMIC_RELEASE);
+    __atomic_store_n(&s_guard_mode, (int)prefs.echo_guard_mode, __ATOMIC_RELEASE);
+    __atomic_store_n(&s_auto_shield_vol_pct, prefs.auto_shield_vol_pct, __ATOMIC_RELEASE);
+
+    s_dl_mutex       = xSemaphoreCreateMutex();
+    s_codec_ctrl_mux = xSemaphoreCreateMutex();
+    if (!s_dl_mutex || !s_codec_ctrl_mux) return ESP_ERR_NO_MEM;
 
     if (!audio_ringbuf_init(&s_downlink_rb, DOWNLINK_RB_SAMPLES, true) ||
         !audio_ringbuf_init(&s_preroll_rb, PREROLL_SAMPLES, true)) {
@@ -584,6 +648,8 @@ void audio_engine_mark_downlink_done(void) {
 void audio_engine_flush_playback(void) {
     __atomic_store_n(&s_playback_active, false, __ATOMIC_RELEASE);
     __atomic_store_n(&s_downlink_done, false, __ATOMIC_RELEASE);
+    __atomic_store_n(&s_spk_env_db_x10, (int16_t)-960, __ATOMIC_RELEASE);
+    __atomic_store_n(&s_spk_last_active_ms, 0U, __ATOMIC_RELEASE);
     __atomic_store_n(&s_flush_requested, true, __ATOMIC_RELEASE);
 
     if (s_dl_mutex && xSemaphoreTake(s_dl_mutex, pdMS_TO_TICKS(50)) == pdTRUE) {
@@ -603,4 +669,31 @@ void audio_engine_get_levels(uint8_t *mic_rms_pct, uint8_t *spk_rms_pct) {
 
 void audio_engine_set_pa_enabled(bool enabled) {
     gpio_set_level(BSP_POWER_AMP_IO, enabled ? 1 : 0);
+}
+
+esp_err_t audio_engine_set_volume(int pct) {
+    if (pct < 0) pct = 0;
+    if (pct > 100) pct = 100;
+    __atomic_store_n(&s_volume_pct, pct, __ATOMIC_RELEASE);
+    if (!s_codec_dev) return ESP_ERR_INVALID_STATE;
+    if (s_codec_ctrl_mux) xSemaphoreTake(s_codec_ctrl_mux, portMAX_DELAY);
+    const int err = esp_codec_dev_set_out_vol(s_codec_dev, pct);
+    if (s_codec_ctrl_mux) xSemaphoreGive(s_codec_ctrl_mux);
+    return (err == ESP_CODEC_DEV_OK) ? ESP_OK : ESP_FAIL;
+}
+
+int audio_engine_get_volume(void) {
+    return __atomic_load_n(&s_volume_pct, __ATOMIC_ACQUIRE);
+}
+
+void audio_engine_set_echo_guard(audio_echo_guard_mode_t mode, int auto_shield_vol_pct) {
+    const int safe_mode = (mode < AUDIO_GUARD_MODE_COUNT) ? (int)mode : (int)AUDIO_GUARD_AUTO;
+    if (auto_shield_vol_pct < 60) auto_shield_vol_pct = 60;
+    if (auto_shield_vol_pct > 100) auto_shield_vol_pct = 100;
+    __atomic_store_n(&s_guard_mode, safe_mode, __ATOMIC_RELEASE);
+    __atomic_store_n(&s_auto_shield_vol_pct, auto_shield_vol_pct, __ATOMIC_RELEASE);
+}
+
+bool audio_engine_is_echo_shield_active(void) {
+    return __atomic_load_n(&s_shield_active, __ATOMIC_ACQUIRE);
 }

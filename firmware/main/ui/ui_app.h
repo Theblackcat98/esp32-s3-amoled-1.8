@@ -3,6 +3,7 @@
 #include <stdbool.h>
 #include <stdint.h>
 
+#include "audio_guard.h"
 #include "board_pmu.h"
 #include "esp_err.h"
 #include "session_mgr.h"
@@ -35,6 +36,8 @@ void ui_app_show_tool_confirm(const char *call_id, const char *name, const char 
 void ui_app_note_user_activity(void);
 void ui_app_toggle_dim(void);
 void ui_app_show_shutdown_notice(void);
+void ui_app_sync_audio_prefs(int vol_pct, audio_echo_guard_mode_t mode, int shield_vol_pct);
+void ui_app_show_toast(const char *msg);
 
 #ifdef __cplusplus
 }

@@ -28,6 +28,7 @@ typedef struct {
         void       *ctx);
     void (*on_harness_tool_status)(const char *call_id, const char *name, const char *state, void *ctx);
     void (*on_harness_tool_confirm)(const char *call_id, const char *name, const char *summary, void *ctx);
+    void (*on_user_transcript)(const char *text, void *ctx);
     void (*on_rtt_sample)(uint32_t rtt_ms, void *ctx);
 } realtime_ws_callbacks_t;
 

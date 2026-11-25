@@ -192,52 +192,42 @@ Because the microphone and speaker sit centimeters apart inside the small black 
 
 Use a **true-black (`#000000`) AMOLED theme** to maximize contrast, reduce power draw, and minimize burn-in. **No cyan is used anywhere in the palette.**
 
-### Screen Wireframe (`368 × 448` Portrait)
+### Screen Wireframe (`368 × 448` Portrait — Variant 2B Editorial Teleprompter)
 
 ```text
 +----------------------------------+  y = 0
-| [WiFi]  12ms    [Orb*]  [87% ⚡] |  Status Bar (Wi-Fi/RTT, Orb Customizer, AXP2101 battery)
-+----------------------------------+  y = 44
-|                                  |
-|          ╭────────────╮          |
-|          │   (  ◉  )  │          |  Customizable Agent Orb (Tap: start/interrupt;
-|          │  Orb/Ring  │          |  Long-press: customize color/style; Swipe: switch agent)
-|          ╰────────────╯          |
-|                                  |
-|            "EMBER"               |  Active Agent Name (Large, crisp font)
-|       Local Voice Agent          |  Agent Role / Status Subtitle
-|                                  |
-|        ● LISTENING ...           |  State Pill (color-coded)
-+----------------------------------+  y = 300
-|  "Sure, I can help you plan      |  Scrolling 2–3 line live caption /
-|   that hardware test..."         |  status area (response.output_text.delta)
-+----------------------------------+  y = 376
-|  [  MUTE  ]    [ START / STOP ]  |  Large touch targets (CST820)
+| ━━━━━━━━ Top Edge Aura ━━━━━━━━  |  4px semantic bar + soft vertical gradient wash
+| ● EMBER SPEAKING    [🔊75%] 87%⚡ |  Compact header + enlarged 94x48 invisible vol hitbox
+| ╻┃╽┃╿┃╽┃╻     12ms • Guard Auto  |  14-bar voice spectrum + RTT / Echo Guard status
++----------------------------------+  y = 78
+|                    [You • 1.8s]  |
+|  EMBER • NOW                     |  Multi-turn scrollable transcript feed (capped at 8 turns)
+|  Large crisp streaming reply     |  with smart auto-follow scroll + floating ↓ Live pill
+|  text...                         |
++----------------------------------+  y = 374
+| [ Mute ] [ Interrupt ] [  End  ] |  Unified 344x54 capsule dock (82 / flex / 82)
 +----------------------------------+  y = 448
 ```
 
-### UI States & Visual Mapping
+### UI States & Visual Mapping (Pure Semantic Colors, Zero Cyan)
 
-| State | Ring / Indicator Color | Meaning |
+| State | Color | Meaning |
 | :--- | :--- | :--- |
-| `BOOTING` / `WIFI_WAIT` | Dim White / Warm Amber | Initializing BSP, AXP2101, ES8311, joining Wi-Fi |
-| `READY` (App Idle) | Soft Slate / Dim Accent | Connected to Wi-Fi; tap **"Start Talking"** / Orb (or press `BOOT`) to open realtime session |
-| `LISTENING` | Active Orb Accent (`#F59E0B` default) | Mic active, AEC+VAD listening; orb animates to user voice RMS |
-| `THINKING` | Gold (`#EAB308`, spinning arc) | Utterance committed (`input_audio_buffer.commit`), awaiting first audio delta |
-| `SPEAKING` | Emerald (`#10B981`) or Active Accent | Agent speaking; orb animates to playback RMS; **AEC+VAD armed for barge-in** |
-| `INTERRUPTED` | Flash White → Active Accent | Barge-in triggered; local buffer flushed & `response.cancel` sent |
-| `TOOL_CALLING` *(Phase 2)* | Indigo / Violet (`#8B5CF6`) Pulse | Harness executing tool (caption shows e.g. *"Running: get_weather"*) |
-| `ERROR` / `RECONNECTING` | Crimson (`#EF4444`) | Server unreachable or WS dropped; auto-backoff reconnect + manual retry button |
+| `READY` | `#D6D3D1` (Dim Stone) | Connected to Wi-Fi; tap **"Start Talking"** (or press `BOOT`) to open realtime session |
+| `BOOTING` / `WIFI_WAIT` / `CONNECTING` / `RECONNECTING` | `#D97706` (Deep Amber) | Initializing BSP, joining Wi-Fi, or opening/reconnecting `/v1/realtime` WS |
+| `LISTENING` | `#F59E0B` (Amber) | Mic active, AEC+VAD listening; top aura & spectrum react to mic RMS |
+| `THINKING` | `#EAB308` (Gold + sweep) | Utterance committed (`input_audio_buffer.commit`), awaiting first audio delta |
+| `SPEAKING` | `#10B981` (Emerald) | Agent speaking; top aura & spectrum react to speaker RMS; **AEC+VAD armed for barge-in** |
+| `INTERRUPTED` | `#FFFFFF` flash → `#F59E0B` | Barge-in triggered; local buffer flushed & `response.cancel` sent |
+| `TOOL_CALLING` *(Phase 2)* | `#8B5CF6` (Violet) | Harness executing tool (inline violet progress banner above feed) |
+| `ERROR` | `#EF4444` (Crimson) | Server unreachable; manual `Retry LAN` button |
 
-### Customizable Orb & Physical Controls
-- **On-Device Orb Customizer (Persisted in NVS):**
-  - Open via top-bar `Orb` button or long-pressing the center orb.
-  - **6 Curated Non-Cyan Presets:** Amber (`#F59E0B`, default), Emerald (`#10B981`), Violet (`#8B5CF6`), Coral (`#FB7185`), Gold (`#EAB308`), Crimson (`#EF4444`) — plus arbitrary `#RRGGBB` overrides from `harness.agent.info`.
-  - **3 Orb Styles:** `Pulse Orb` (breathing solid core + halo), `Sonar Rings` (concentric reactive ripples), and `Arc Halo` (rotating segmented energy ring).
+### Touch, Smart Scroll & Physical Controls
+- **Smart Streaming Scroll:** Auto-follows tokens during `SPEAKING` unless the user scrolls up (`> 24px` from bottom), which detaches immediately and shows a floating `↓ Live` / `↓ Bottom` pill. Transcript history persists across turns (up to 8 turns) when returning to `LISTENING`.
 - **Touch (`CST820`):**
-  - Tap center orb in `READY` → start session; tap during `SPEAKING` → manual force-interrupt (backup for noisy environments).
-  - Horizontal swipe on center card → emit `harness.agent.switch` (Phase 2).
-  - Bottom buttons → **Mute Mic** (hard mute before uplink) and **Start Talking / End**.
+  - Tap enlarged `94×48` header volume hitbox (or `Setup` in `READY`/`ERROR`) → 2-tab Settings sheet (`Audio & Guard` + `Buttons`, persisted in NVS).
+  - Horizontal swipe on feed → emit `harness.agent.switch` (Phase 2).
+  - Unified dock → **Mute / Muted**, contextual center action (`Start Talking` / `Listening` / `Interrupt` / `Cancel` / `Retry LAN`), and **End / Setup**.
 - **Side Buttons:**
   - `BOOT` short-press → Toggle Mute (or Start session if `READY`); long-press → End/Start session.
   - `PWR` short-press → Dim/wake AMOLED (CO5300 brightness register); long-press → Clean shutdown via AXP2101 (`0x10` bit 0).
@@ -286,14 +276,14 @@ esp32-s3-amoled-1.8/
     ├── test_host/                  # Host-compiled unit tests (resampler + PSRAM ring buffer)
     └── main/
         ├── idf_component.yml       # waveshare/esp32_s3_touch_amoled_1_8, espressif/esp-sr, esp_websocket_client, lvgl
-        ├── Kconfig.projbuild       # Menuconfig Voice Agent & Orb defaults
+        ├── Kconfig.projbuild       # Menuconfig Voice Agent & display defaults
         ├── app_config.h            # Unified config + optional local_config.h overrides
         ├── app_main.c
         ├── board/                  # BSP init, AXP2101 telemetry/PWR/shutdown, BOOT button
         ├── audio/                  # Full-duplex I2S, ES8311 reg 0x44, ESP-SR AFE("RM")/AEC/VAD, 24k->16k resampler
         ├── net/                    # Wi-Fi STA manager, /v1/realtime GA WS client, JSON/Base64 codec
         ├── session/                # Conversation & barge-in state machine
-        └── ui/                     # LVGL 9 Agent Card, customizable non-cyan orb + NVS theme, touch/confirm modals
+        └── ui/                     # LVGL 9 Editorial Teleprompter (Variant 2B) multi-turn UI & settings/confirm modals
 ```
 
 ---
@@ -363,6 +353,6 @@ esp32-s3-amoled-1.8/
 
 1. **LAN Host Specs & Model Selection:** Local host (`192.168.1.199`, Ryzen 7 9700X + AMD RX 7900 XT 20 GB) running stock `llama.cpp` (`0.8.0-dev+` ROCm build) with **`LFM3-Audio-2B-Q4_K_M.gguf` + `mmproj`** on port **`8082`**.
 2. **Power Setup for PoC:** Auto-detected at runtime via AXP2101 (`isBatteryConnect()` / `0x00` bit 3) — shows live LiPo `%` + charging status when connected, or USB-C `VBUS` status when tethered.
-3. **Session Start UX:** Boot to `"Tap to Talk"` (`READY`) Agent Card; tap the orb or `START TALKING` button (or press `BOOT`) to open `/v1/realtime` and enter `LISTENING`.
+3. **Session Start UX:** Boot to `READY` Editorial Teleprompter screen; tap `Start Talking` (or press `BOOT`) to open `/v1/realtime` and enter `LISTENING`.
 4. **LAN Discovery:** Static LAN IP (`192.168.1.199:8082`) configured via Kconfig defaults and overridden in gitignored `firmware/sdkconfig.defaults.local` / `firmware/main/local_config.h`.
-5. **Initial Agent Persona & Orb:** **"EMBER"** (`Local Voice Agent`), default warm Amber (`#F59E0B`), **no cyan anywhere**, with an on-device Orb Customizer (6 curated non-cyan color presets + 3 orb styles) persisted in NVS.
+5. **Initial Agent Persona & Theme:** **"EMBER"** (`Local Voice Agent`), pure semantic `app_state_t` colors on `#000000` AMOLED (**zero cyan anywhere**), Editorial Teleprompter multi-turn feed (Variant 2B).

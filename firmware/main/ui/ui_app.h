@@ -24,6 +24,8 @@ void ui_app_set_agent_info(
 
 void ui_app_set_caption(const char *text, bool append);
 void ui_app_clear_caption(void);
+void ui_app_add_user_turn(const char *text, uint32_t duration_ms);
+void ui_app_set_tool_status(const char *name, const char *state);
 void ui_app_set_muted(bool muted);
 
 void ui_app_update_telemetry(

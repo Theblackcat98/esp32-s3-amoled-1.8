@@ -39,7 +39,7 @@ menu "Voice Agent Configuration"
                 If disabled (default), device lands on the Tap-to-Talk READY Agent Card.
     endmenu
 
-    menu "Agent Persona & Customizable Orb"
+    menu "Agent Persona & Display"
         config VOICE_AGENT_NAME
             string "Default Agent Name"
             default "EMBER"
@@ -51,10 +51,6 @@ menu "Voice Agent Configuration"
         config VOICE_AGENT_INSTRUCTIONS
             string "System Instructions"
             default "Respond with interleaved text and audio. You are Ember, a concise, helpful local voice assistant running on the user's LAN. Keep replies short and conversational."
-
-        config VOICE_ORB_DEFAULT_COLOR
-            hex "Default Orb Accent Color (0xRRGGBB, no cyan)"
-            default 0xF59E0B
 
         config VOICE_IDLE_DIM_SEC
             int "Idle AMOLED auto-dim timeout (seconds, 0 disables)"

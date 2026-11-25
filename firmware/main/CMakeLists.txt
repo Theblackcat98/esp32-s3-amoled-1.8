@@ -11,7 +11,6 @@ idf_component_register(
         "net/wifi_mgr.c"
         "net/realtime_ws.c"
         "session/session_mgr.c"
-        "ui/ui_theme.c"
         "ui/ui_app.c"
     INCLUDE_DIRS
         "."

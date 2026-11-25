@@ -231,6 +231,15 @@ static void handle_json_event(const char *json_str, int len) {
                 cJSON_IsString(summary) ? summary->valuestring : "Allow action?",
                 s_cb_ctx);
         }
+    } else if (strcmp(ev_type, "conversation.item.input_audio_transcription.completed") == 0 ||
+               strcmp(ev_type, "harness.user.transcript") == 0) {
+        const cJSON *txt = cJSON_GetObjectItemCaseSensitive(root, "transcript");
+        if (!cJSON_IsString(txt)) {
+            txt = cJSON_GetObjectItemCaseSensitive(root, "text");
+        }
+        if (cJSON_IsString(txt) && txt->valuestring[0] != '\0' && s_cbs.on_user_transcript) {
+            s_cbs.on_user_transcript(txt->valuestring, s_cb_ctx);
+        }
     }
     cJSON_Delete(root);
 }

@@ -20,7 +20,7 @@ This repository contains two complementary firmware targets plus host tooling:
    - Verify compilation with `cd firmware && pio run`.
    - ES8311 reg `0x44 = 0x48` outputs stereo `(L = DAC_ref, R = ADC_mic)`, so ESP-SR AFE **must** use `input_format = "RM"` (`AFE_TYPE_FD`, `AEC_MODE_FD_LOW_COST`, `models = NULL`).
    - OpenAI Realtime GA WebSocket client uses `response.output_audio.delta` / `response.output_text.delta` (never beta `response.audio.*`), filters by `response_id`, and keeps audio/WS buffers in Octal PSRAM.
-   - UI uses a true-black AMOLED theme with **zero cyan anywhere** and a customizable NVS-persisted Orb.
+   - UI uses a true-black AMOLED **Editorial Teleprompter (Variant 2B)** theme with **zero cyan anywhere** and pure semantic `app_state_t` colors (no Orb Customizer).
    - Never start `llama-server` / `lfm3.sh` in automated tests; test server protocol against `server/mock_realtime_server.py`.
 
 2. **Root Hardware Bring-Up Diagnostic (`platformio.ini`, Arduino + LVGL 8.4):**

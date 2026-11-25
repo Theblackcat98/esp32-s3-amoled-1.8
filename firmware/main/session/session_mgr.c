@@ -30,6 +30,7 @@ static bool              s_awaiting_cancel        = false;
 static bool              s_pending_response       = false;
 static bool              s_caption_started        = false;
 static bool              s_response_finished      = true;
+static int64_t           s_speech_start_us        = 0;
 static int64_t           s_vad_end_us             = 0;
 static bool              s_first_audio_logged     = false;
 
@@ -45,6 +46,8 @@ static void on_speech_start_cb(bool during_playback, void *ctx) {
         xSemaphoreGive(s_lock);
         return;
     }
+
+    s_speech_start_us = esp_timer_get_time();
 
     if (during_playback || s_state == APP_STATE_SPEAKING || s_state == APP_STATE_THINKING) {
         ESP_LOGI(TAG, "Barge-in triggered (resp=%s)", s_active_resp_id);
@@ -84,7 +87,17 @@ static void on_speech_end_cb(void *ctx) {
         return;
     }
 
-    s_vad_end_us         = esp_timer_get_time();
+    const int64_t now_us = esp_timer_get_time();
+    int64_t dur_ms       = 1000;
+    if (s_speech_start_us > 0 && now_us > s_speech_start_us) {
+        const int64_t raw_ms = (now_us - s_speech_start_us) / 1000LL;
+        dur_ms               = raw_ms + APP_VAD_HOLDBACK_MS - APP_VAD_SILENCE_MS;
+        if (dur_ms < 300) {
+            dur_ms = (raw_ms > 300) ? raw_ms : 300;
+        }
+    }
+    s_speech_start_us    = 0;
+    s_vad_end_us         = now_us;
     s_first_audio_logged = false;
     realtime_ws_send_audio_commit();
 
@@ -95,6 +108,7 @@ static void on_speech_end_cb(void *ctx) {
     }
     set_state_locked(APP_STATE_THINKING, "Thinking...");
     xSemaphoreGive(s_lock);
+    ui_app_add_user_turn(NULL, (uint32_t)dur_ms);
 }
 
 static void on_ws_connected_cb(bool connected, void *ctx) {
@@ -109,13 +123,14 @@ static void on_ws_connected_cb(bool connected, void *ctx) {
         s_awaiting_cancel       = false;
         s_pending_response      = false;
         s_response_finished     = true;
+        s_speech_start_us       = 0;
 
         if (!wifi_mgr_is_connected()) {
             set_state_locked(APP_STATE_WIFI_WAIT, "Waiting for Wi-Fi...");
         } else if (s_want_session) {
             set_state_locked(APP_STATE_RECONNECTING, "Reconnecting to server...");
         } else {
-            set_state_locked(APP_STATE_READY, "Tap orb or Start to talk");
+            set_state_locked(APP_STATE_READY, "Tap Start Talking to begin.");
         }
     } else {
         set_state_locked(APP_STATE_CONNECTING, "Handshaking...");
@@ -137,7 +152,6 @@ static void on_session_ready_cb(int in_rate, int out_rate, void *ctx) {
     if (s_want_session) {
         audio_engine_set_session_active(true);
         set_state_locked(APP_STATE_LISTENING, "Listening...");
-        ui_app_set_caption("Ready. Speak naturally anytime.", false);
     }
     xSemaphoreGive(s_lock);
 }
@@ -227,7 +241,7 @@ static void on_ws_error_cb(const char *message, void *ctx) {
     (void)ctx;
     xSemaphoreTake(s_lock, portMAX_DELAY);
     if (s_want_session) {
-        ui_app_set_caption(message ? message : "Connection error", false);
+        ui_app_show_toast(message ? message : "Connection error");
         set_state_locked(realtime_ws_is_connected() ? APP_STATE_ERROR : APP_STATE_RECONNECTING,
                          message ? message : "Connection error");
     }
@@ -251,11 +265,11 @@ static void on_harness_tool_status_cb(const char *call_id, const char *name, con
     (void)call_id;
     (void)ctx;
     xSemaphoreTake(s_lock, portMAX_DELAY);
+    ui_app_set_tool_status(name, state);
     if (state && strcmp(state, "running") == 0) {
         char buf[80];
         snprintf(buf, sizeof(buf), "Running: %s", name ? name : "tool");
         set_state_locked(APP_STATE_TOOL_CALLING, buf);
-        ui_app_set_caption(buf, false);
     } else if (s_state == APP_STATE_TOOL_CALLING && s_want_session) {
         set_state_locked(APP_STATE_THINKING, "Finishing tool...");
     }
@@ -265,6 +279,13 @@ static void on_harness_tool_status_cb(const char *call_id, const char *name, con
 static void on_harness_tool_confirm_cb(const char *call_id, const char *name, const char *summary, void *ctx) {
     (void)ctx;
     ui_app_show_tool_confirm(call_id, name, summary);
+}
+
+static void on_user_transcript_cb(const char *text, void *ctx) {
+    (void)ctx;
+    if (text && text[0] != '\0') {
+        ui_app_add_user_turn(text, 0);
+    }
 }
 
 static void session_supervisor_task(void *arg) {
@@ -298,7 +319,7 @@ static void session_supervisor_task(void *arg) {
                 realtime_ws_connect();
                 set_state_locked(APP_STATE_CONNECTING, "Connecting...");
             } else {
-                set_state_locked(APP_STATE_READY, "Tap orb or Start to talk");
+                set_state_locked(APP_STATE_READY, "Tap Start Talking to begin.");
             }
         } else if (s_state == APP_STATE_SPEAKING && s_response_finished && !audio_engine_is_playback_active()) {
             audio_engine_set_speaking(false);
@@ -333,6 +354,7 @@ esp_err_t session_mgr_init(void) {
         .on_harness_agent_info   = on_harness_agent_info_cb,
         .on_harness_tool_status  = on_harness_tool_status_cb,
         .on_harness_tool_confirm = on_harness_tool_confirm_cb,
+        .on_user_transcript      = on_user_transcript_cb,
         .on_rtt_sample           = NULL,
     };
     ESP_ERROR_CHECK(realtime_ws_init(&ws_cbs, NULL));
@@ -375,8 +397,9 @@ void session_mgr_stop_session(void) {
     s_awaiting_cancel       = false;
     s_pending_response      = false;
     s_response_finished     = true;
+    s_speech_start_us       = 0;
     set_state_locked(wifi_mgr_is_connected() ? APP_STATE_READY : APP_STATE_WIFI_WAIT,
-                     wifi_mgr_is_connected() ? "Tap orb or Start to talk" : "Waiting for Wi-Fi...");
+                     wifi_mgr_is_connected() ? "Tap Start Talking to begin." : "Waiting for Wi-Fi...");
     ui_app_clear_caption();
     xSemaphoreGive(s_lock);
 }
